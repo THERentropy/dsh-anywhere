@@ -1,0 +1,171 @@
+name: Release
+
+# 打 v* 标签即发布发行版,也可以在 Actions 页面手动运行并指定版本号。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "发行版本号,例如 v2.0.1(写入 APK 的 versionName,会自动补上 v 前缀)"
+        required: true
+        type: string
+      version_code:
+        description: "可选:APK 内部的 versionCode,留空则使用仓库中的值"
+        required: false
+        type: string
+      prerelease:
+        description: "标记为预发行版(Pre-release)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build APK and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-36 build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve release version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${INPUT_VERSION}"
+          fi
+          case "${tag}" in
+            v*) ;;
+            *) tag="v${tag}" ;;
+          esac
+          gradle_args="-Pdsh.versionName=${tag#v}"
+          if [ -n "${INPUT_VERSION_CODE}" ]; then
+            gradle_args="${gradle_args} -Pdsh.versionCode=${INPUT_VERSION_CODE}"
+          fi
+          {
+            echo "tag=${tag}"
+            echo "version_name=${tag#v}"
+            echo "gradle_args=${gradle_args}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Releasing ${tag} (versionName ${tag#v})." >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Run verification gates and unit tests
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew checkLegacyRoutes testDebugUnitTest
+
+      - name: Prepare release signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keystore="${RUNNER_TEMP}/release.keystore"
+          if [ -n "${KEYSTORE_BASE64}" ]; then
+            echo "::notice::Signing with the keystore from repository secrets."
+            printf '%s' "${KEYSTORE_BASE64}" | tr -d '\r\n' | base64 -d > "${keystore}"
+            store_password="${KEYSTORE_PASSWORD:?ANDROID_KEYSTORE_PASSWORD is required when ANDROID_KEYSTORE_BASE64 is set}"
+            key_alias="${KEY_ALIAS:?ANDROID_KEY_ALIAS is required when ANDROID_KEYSTORE_BASE64 is set}"
+            key_password="${KEY_PASSWORD:-${store_password}}"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set, generating a throwaway self-signed keystore. Installation over a build signed with a different key requires uninstalling first."
+            store_password="$(openssl rand -hex 24)"
+            key_alias="dsh-release"
+            key_password="${store_password}"
+            keytool -genkeypair \
+              -keystore "${keystore}" \
+              -storepass "${store_password}" \
+              -keypass "${key_password}" \
+              -alias "${key_alias}" \
+              -keyalg RSA \
+              -keysize 4096 \
+              -validity 10000 \
+              -dname "CN=DSH Agents, OU=CI, O=DSH Agents, C=CN"
+          fi
+          {
+            echo "DSH_RELEASE_KEYSTORE_FILE=${keystore}"
+            echo "DSH_RELEASE_KEYSTORE_PASSWORD=${store_password}"
+            echo "DSH_RELEASE_KEY_ALIAS=${key_alias}"
+            echo "DSH_RELEASE_KEY_PASSWORD=${key_password}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease ${{ steps.version.outputs.gradle_args }}
+
+      - name: Collect APK
+        id: apk
+        run: |
+          set -euo pipefail
+          source_apk="$(find app/build/outputs/apk/release -type f -name '*.apk' -print -quit)"
+          if [ -z "${source_apk}" ]; then
+            echo "::error::assembleRelease produced no APK."
+            exit 1
+          fi
+          apk="DSH-Agents-${{ steps.version.outputs.tag }}.apk"
+          cp "${source_apk}" "${apk}"
+          sha256sum "${apk}" | tee "${apk}.sha256"
+          {
+            echo "apk=${apk}"
+            echo "source_apk=${source_apk}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "| APK | \`${apk}\` |" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSH-Agents-${{ steps.version.outputs.tag }}
+          path: |
+            DSH-Agents-${{ steps.version.outputs.tag }}.apk
+            DSH-Agents-${{ steps.version.outputs.tag }}.apk.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: DSH Agents ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ inputs.prerelease == true || contains(steps.version.outputs.tag, '-') }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            DSH-Agents-${{ steps.version.outputs.tag }}.apk
+            DSH-Agents-${{ steps.version.outputs.tag }}.apk.sha256
+          body: |
+            Android 8.0+ (minSdk 26),双模式:DSH 远程访问扫码配对 + Agents Anywhere 原生客户端。
+
+            - 安装包:`DSH-Agents-${{ steps.version.outputs.tag }}.apk`
+            - 校验:`sha256sum -c DSH-Agents-${{ steps.version.outputs.tag }}.apk.sha256`
+
+            签名由仓库 Secrets 提供;未配置时使用 CI 临时生成的自签名证书,与既有安装签名不一致时需要先卸载再安装。

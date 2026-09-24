@@ -27,7 +27,33 @@ gradlew.bat testDebugUnitTest assembleDebug
 ./gradlew testDebugUnitTest assembleDebug
 ```
 
-产物位于 `app/build/outputs/apk/`。release 构建未配置签名;请使用自己的 keystore 并保持签名一致。
+产物位于 `app/build/outputs/apk/`。release 构建默认不签名;按下面「发行版」的签名规则配好 keystore 后会输出已签名的 `app-release.apk`。
+
+## 发行版(GitHub Actions)
+
+`.github/workflows/release.yml` 在打 `v*` 标签或手动运行时会构建已签名的 release APK 并创建 GitHub Release。
+
+打标签(推荐):
+
+```bash
+git tag v2.0.1
+git push origin v2.0.1
+```
+
+手动运行:Actions → Release → Run workflow,填写版本号(如 `v2.0.1`,去掉 `v` 前缀后写入 APK 的 `versionName`),可选填 `version_code` 覆盖 APK 内部版本号。
+
+产物:`DSH-Agents-<tag>.apk` 及其 `.sha256` 校验文件,同时发布到 Release 与 workflow artifact。
+
+签名规则:
+
+- 配置以下仓库 Secrets 后使用正式签名,后续版本可覆盖安装、签名保持一致:
+  - `ANDROID_KEYSTORE_BASE64` — keystore 文件的 base64 内容(`PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes("release.keystore"))`)
+  - `ANDROID_KEYSTORE_PASSWORD`
+  - `ANDROID_KEY_ALIAS`
+  - `ANDROID_KEY_PASSWORD`(留空则复用 keystore 密码)
+- 未配置时流水线会临时生成自签名证书,产物同样可以安装,但每次运行的密钥都不同:覆盖安装前需要先卸载旧版本。
+
+本地要出签名包时,设置同名环境变量,或用 Gradle 属性 / `local.properties` 的 `dsh.release.keystoreFile`、`dsh.release.keystorePassword`、`dsh.release.keyAlias`、`dsh.release.keyPassword`。
 
 ## 使用
 

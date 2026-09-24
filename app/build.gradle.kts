@@ -14,6 +14,28 @@ val debugServerUrl = providers.gradleProperty("agentsAnywhere.serverUrl")
     .orElse(localSettings.getProperty("agentsAnywhere.serverUrl", officialServerUrl))
     .get()
 
+// CI 通过 -Pdsh.versionName / -Pdsh.versionCode 覆盖发行版本号,本地不带参数时保持仓库中的值。
+val releaseVersionName = providers.gradleProperty("dsh.versionName")
+val releaseVersionCode = providers.gradleProperty("dsh.versionCode").map { it.toInt() }
+
+// release 签名:优先读环境变量(CI),其次读 -P 属性,最后读 local.properties。
+fun signingValue(environmentVariable: String, propertyName: String): String? =
+    providers.environmentVariable(environmentVariable).orNull
+        ?: providers.gradleProperty(propertyName).orNull
+        ?: localSettings.getProperty(propertyName)
+
+val releaseKeystoreFile = signingValue("DSH_RELEASE_KEYSTORE_FILE", "dsh.release.keystoreFile")
+    ?.let { path -> rootProject.file(path) }
+val releaseKeystorePassword = signingValue("DSH_RELEASE_KEYSTORE_PASSWORD", "dsh.release.keystorePassword")
+val releaseKeyAlias = signingValue("DSH_RELEASE_KEY_ALIAS", "dsh.release.keyAlias")
+val releaseKeyPassword = signingValue("DSH_RELEASE_KEY_PASSWORD", "dsh.release.keyPassword")
+
+// 缺少任一项配置时不注册签名配置,release 构建保持未签名,与本仓库原有行为一致。
+val hasReleaseSigning = releaseKeystoreFile?.isFile == true &&
+    !releaseKeystorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank()
+
 fun String.asBuildConfigString(): String = "\"" + replace("\\", "\\\\")
     .replace("\"", "\\\"")
     .replace("\n", "\\n")
@@ -27,13 +49,24 @@ android {
         applicationId = "com.dshagents.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "2.0.0"
+        versionCode = releaseVersionCode.getOrElse(7)
+        versionName = releaseVersionName.getOrElse("2.0.0")
         buildConfigField("String", "OFFICIAL_SERVER_URL", officialServerUrl.asBuildConfigString())
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         vectorDrawables {
             useSupportLibrary = true
+        }
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseKeystoreFile
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
@@ -47,6 +80,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
