@@ -214,15 +214,22 @@ internal fun DshAgentsNavHost(
                     if (request == null) {
                         LaunchedEffect(Unit) { navigate(AppDestination.DshPairing) }
                     } else {
-                        DshWebScreen(
-                            launchRequest = request,
-                            hostStore = dshHostStore,
-                            onExit = { navigate(AppDestination.DshPairing) },
-                            onRepair = {
-                                onDshLaunchRequest(null)
-                                navigate(AppDestination.DshPairing)
-                            },
-                        )
+                        // A launch request is one WebView session: keying the
+                        // container on it forces a fresh WebView (and a fresh
+                        // loadUrl) even when AnimatedContent reuses this branch
+                        // mid-transition, instead of leaving the old WebView
+                        // on a stale, never-reloaded URL.
+                        androidx.compose.runtime.key(request) {
+                            DshWebScreen(
+                                launchRequest = request,
+                                hostStore = dshHostStore,
+                                onExit = { navigate(AppDestination.DshPairing) },
+                                onRepair = {
+                                    onDshLaunchRequest(null)
+                                    navigate(AppDestination.DshPairing)
+                                },
+                            )
+                        }
                     }
                 }
                 AppDestination.LoginMethods -> {

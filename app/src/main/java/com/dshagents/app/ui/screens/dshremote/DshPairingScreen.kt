@@ -482,9 +482,7 @@ private fun DshCameraPreview(
                         ?.getValue(scanner)
                         ?.firstOrNull()
                         ?.rawValue
-                    if (qrValue.isNullOrBlank()) {
-                        emissionGate.clearVisibleCode()
-                    } else if (emissionGate.shouldEmit(qrValue, SystemClock.elapsedRealtime())) {
+                    if (!qrValue.isNullOrBlank() && emissionGate.shouldEmit(qrValue, SystemClock.elapsedRealtime())) {
                         currentOnQrValue(qrValue)
                     }
                 },
@@ -532,20 +530,21 @@ private fun DshScannerOverlay() {
     }
 }
 
+/**
+ * Throttles QR submissions from the analyzer stream. Detection flickers (a
+ * dropped frame between two hits of the same code) must not re-fire the
+ * pairing navigation, so the retry delay is keyed on the last EMITTED value
+ * and survives visibility gaps; a genuinely different code fires immediately.
+ */
 private class DshQrEmissionGate {
-    private var lastVisibleQrValue: String? = null
+    private var lastEmittedQrValue: String? = null
     private var lastEmissionAtMillis: Long = 0
 
-    fun clearVisibleCode() {
-        lastVisibleQrValue = null
-    }
-
     fun shouldEmit(qrValue: String, nowMillis: Long): Boolean {
-        val sameVisibleQr = qrValue == lastVisibleQrValue
-        if (sameVisibleQr && nowMillis - lastEmissionAtMillis < SameQrRetryDelayMillis) {
+        if (qrValue == lastEmittedQrValue && nowMillis - lastEmissionAtMillis < SameQrRetryDelayMillis) {
             return false
         }
-        lastVisibleQrValue = qrValue
+        lastEmittedQrValue = qrValue
         lastEmissionAtMillis = nowMillis
         return true
     }

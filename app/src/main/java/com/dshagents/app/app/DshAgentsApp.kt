@@ -93,7 +93,9 @@ fun DshAgentsApp(
     val context = LocalContext.current
     val sessionStore = remember(context) { AuthSessionStore(context) }
     val dshHostStore = remember(context) { DshHostStore(context) }
-    var dshLaunchRequest by remember { mutableStateOf<DshLaunchRequest?>(null) }
+    var dshLaunchRequest by rememberSaveable(stateSaver = DshLaunchRequestSaver) {
+        mutableStateOf<DshLaunchRequest?>(null)
+    }
     var destinationName by rememberSaveable {
         mutableStateOf(AppDestination.ModePicker.name)
     }
@@ -874,6 +876,23 @@ private fun Context.hasUsableNetwork(): Boolean {
     val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
     return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
 }
+
+private val DshLaunchRequestSaver = listSaver<DshLaunchRequest?, Any>(
+    save = { request ->
+        when (request) {
+            is DshLaunchRequest.PairUrl -> listOf("pair", request.url)
+            is DshLaunchRequest.ResumeHost -> listOf("resume", request.hostId)
+            null -> emptyList()
+        }
+    },
+    restore = { values ->
+        when (values.getOrNull(0)) {
+            "pair" -> DshLaunchRequest.PairUrl(values[1] as String)
+            "resume" -> DshLaunchRequest.ResumeHost(values[1] as String)
+            else -> null
+        }
+    },
+)
 
 private val NewSessionDraftSaver = listSaver<NewSessionDraft?, Any>(
     save = { draft ->
