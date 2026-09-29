@@ -81,6 +81,13 @@ internal fun DshWebScreen(
     var loadTimedOut by remember { mutableStateOf(false) }
     // Bumped on retry: restarts the watchdog window for the reload attempt.
     var loadAttempt by remember { mutableIntStateOf(0) }
+    // Bumped on every started navigation and every settled page: the watchdog
+    // and the blank probe restart per navigation round, so a stuck load or an
+    // empty shell after the pairing settle is caught even when it is not the
+    // very first load of this WebView session.
+    var navAttempt by remember { mutableIntStateOf(0) }
+    var settledAttempt by remember { mutableIntStateOf(0) }
+    val webView = remember { mutableStateOf<WebView?>(null) }
 
     val initialUrl = remember(launchRequest) {
         when (launchRequest) {
@@ -100,17 +107,33 @@ internal fun DshWebScreen(
     // Blank-shell guard: onReceivedError does not always fire for a main frame
     // that never renders (dropped connection mid-redirect, blocked subresources),
     // and the user would sit on the WebView's blank canvas forever. Surface the
-    // retry overlay when a load never settles.
-    androidx.compose.runtime.LaunchedEffect(initialUrl, loadAttempt) {
+    // retry overlay when a load never settles. Keyed on every started
+    // navigation, so a stuck load after the pairing settle is covered too,
+    // not only this session's first load.
+    androidx.compose.runtime.LaunchedEffect(initialUrl, loadAttempt, navAttempt) {
         loadTimedOut = false
         kotlinx.coroutines.delay(LoadWatchdogMillis)
         if (loading && !loadFailed && !unpaired) loadTimedOut = true
     }
+    // Settled-but-blank guard: onPageFinished can run while the document the
+    // user actually sees stays empty (an error body the WebView does not
+    // render, a shell whose subresources all failed, a hijacked response) -
+    // and because the load "settled", the watchdog above never fires, leaving
+    // the canvas blank with no way forward. Probe the settled document for a
+    // short window and surface the retry overlay when it never reports any
+    // content height.
+    androidx.compose.runtime.LaunchedEffect(initialUrl, loadAttempt, settledAttempt) {
+        if (settledAttempt == 0) return@LaunchedEffect
+        repeat(BlankProbeCount) {
+            kotlinx.coroutines.delay(BlankProbeIntervalMillis)
+            if (loading || loadFailed || unpaired) return@LaunchedEffect
+            if ((webView.value?.contentHeight ?: 0) > 0) return@LaunchedEffect
+        }
+        if (!loading && !loadFailed && !unpaired) loadTimedOut = true
+    }
     androidx.compose.runtime.LaunchedEffect(loading) {
         if (!loading) loadTimedOut = false
     }
-
-    val webView = remember { mutableStateOf<WebView?>(null) }
 
     val fileChooserLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult(),
@@ -182,15 +205,24 @@ internal fun DshWebScreen(
                         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                             loading = true
                             loadFailed = false
+                            progress = 0
+                            navAttempt += 1
                         }
 
                         override fun onPageFinished(view: WebView, url: String) {
                             loading = false
+                            settledAttempt += 1
                             canGoBack = view.canGoBack()
                             val origin = dshOriginOf(url) ?: return
                             val path = Uri.parse(url).path.orEmpty()
                             val settledInApp = path == "/" || path.startsWith("/pair-app")
                             if (!unpaired && settledInApp) {
+                                // The device cookie minted by the pairing chain
+                                // lives in the CookieManager's memory until a
+                                // flush: persist it right away so a process
+                                // death immediately after pairing can still
+                                // resume through the cookie-backed /pair-app.
+                                CookieManager.getInstance().flush()
                                 val hostId = if (resumeHostId != null) {
                                     hostStore.touch(resumeHostId)
                                     resumeHostId
@@ -230,6 +262,14 @@ internal fun DshWebScreen(
                                         }
                                     }
                                     unpaired = true
+                                }
+                                else -> if (errorResponse.statusCode >= 400) {
+                                    // Any other main-frame HTTP error (429 rate limited,
+                                    // 502 shell unavailable, ...) leaves the WebView with
+                                    // a near-empty error body that reads as a blank page,
+                                    // while the load still "finishes" successfully. Treat
+                                    // it as a failed load so the retry overlay shows.
+                                    loadFailed = true
                                 }
                             }
                         }
@@ -332,6 +372,15 @@ internal fun DshWebScreen(
  * blank canvas. Generous enough for a cold SPA boot over a slow LAN.
  */
 private const val LoadWatchdogMillis = 20_000L
+
+/**
+ * How many times the settled-blank probe samples the page's content height
+ * before concluding the finished load left an empty canvas behind.
+ */
+private const val BlankProbeCount = 4
+
+/** Gap between settled-blank probe samples. */
+private const val BlankProbeIntervalMillis = 800L
 
 @Composable
 private fun DshWebOverlay(
