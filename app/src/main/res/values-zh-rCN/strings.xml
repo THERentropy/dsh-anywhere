@@ -737,5 +737,6 @@
     <string name="dsh_web_repair_action">重新配对</string>
     <string name="dsh_web_close">退出远程访问</string>
     <string name="dsh_web_load_failed">页面加载失败,请确认 DSH Web 实例可以访问。</string>
+    <string name="dsh_web_load_timeout">页面加载时间过长。请确认 DSH Web 主机可访问,然后重试。</string>
     <string name="dsh_web_retry">重试</string>
 </resources>

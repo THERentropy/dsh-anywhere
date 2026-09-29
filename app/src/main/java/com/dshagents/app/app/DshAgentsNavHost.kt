@@ -57,6 +57,7 @@ import com.dshagents.app.ui.screens.devices.DeviceDetailScreen
 import com.dshagents.app.ui.screens.devices.DevicesScreen
 import com.dshagents.app.ui.screens.devices.rememberDeviceAgentPreviews
 import com.dshagents.app.ui.screens.dshremote.DshPairingScreen
+import com.dshagents.app.ui.screens.dshremote.DshQrEmissionGate
 import com.dshagents.app.ui.screens.dshremote.DshWebScreen
 import com.dshagents.app.ui.screens.files.FilesScreen
 import com.dshagents.app.ui.screens.home.ArchivedSessionsScreen
@@ -98,6 +99,7 @@ internal fun DshAgentsNavHost(
     dshHostStore: DshHostStore,
     dshLaunchRequest: DshLaunchRequest?,
     onDshLaunchRequest: (DshLaunchRequest?) -> Unit,
+    onDshHostPaired: (String) -> Unit,
     agentsAnywhereEntry: AppDestination,
     navigate: (AppDestination) -> Unit,
     onRefreshSessions: () -> Unit,
@@ -155,6 +157,10 @@ internal fun DshAgentsNavHost(
 ) {
     val context = LocalContext.current
     val colors = LocalAAColors.current
+    // Hoisted above the pairing screen on purpose: the same QR link must not
+    // re-open pairing when the user comes back from the WebView (each open
+    // redeems the token and mints another device session on the host).
+    val dshQrGate = remember { DshQrEmissionGate() }
     var profileOpen by rememberSaveable(serverUrl, userId) { mutableStateOf(false) }
     var deviceAgentPreviewRefreshKey by remember { mutableLongStateOf(0L) }
     val deviceAgentPreviews = rememberDeviceAgentPreviews(
@@ -208,6 +214,7 @@ internal fun DshAgentsNavHost(
                         navigate(AppDestination.DshWeb)
                     },
                     onBack = { navigate(AppDestination.ModePicker) },
+                    qrGate = dshQrGate,
                 )
                 AppDestination.DshWeb -> {
                     val request = dshLaunchRequest
@@ -228,6 +235,7 @@ internal fun DshAgentsNavHost(
                                     onDshLaunchRequest(null)
                                     navigate(AppDestination.DshPairing)
                                 },
+                                onHostPaired = onDshHostPaired,
                             )
                         }
                     }

@@ -738,5 +738,6 @@
     <string name="dsh_web_repair_action">Pair again</string>
     <string name="dsh_web_close">Leave remote access</string>
     <string name="dsh_web_load_failed">The page could not be loaded. Check that the DSH Web instance is reachable.</string>
+    <string name="dsh_web_load_timeout">The page is taking too long to load. Check that the DSH Web host is reachable, then retry.</string>
     <string name="dsh_web_retry">Retry</string>
 </resources>

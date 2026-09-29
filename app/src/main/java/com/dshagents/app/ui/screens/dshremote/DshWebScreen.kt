@@ -64,11 +64,12 @@ import com.composables.icons.lucide.CircleAlert
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun DshWebScreen(
+internal fun DshWebScreen(
     launchRequest: DshLaunchRequest,
     hostStore: DshHostStore,
     onExit: () -> Unit,
     onRepair: () -> Unit,
+    onHostPaired: (String) -> Unit,
 ) {
     val colors = LocalAAColors.current
     var progress by remember { mutableIntStateOf(0) }
@@ -77,6 +78,9 @@ fun DshWebScreen(
     var loadFailed by remember { mutableStateOf(false) }
     var canGoBack by remember { mutableStateOf(false) }
     var filePathCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+    var loadTimedOut by remember { mutableStateOf(false) }
+    // Bumped on retry: restarts the watchdog window for the reload attempt.
+    var loadAttempt by remember { mutableIntStateOf(0) }
 
     val initialUrl = remember(launchRequest) {
         when (launchRequest) {
@@ -92,6 +96,19 @@ fun DshWebScreen(
         if (initialUrl == null) onRepair()
     }
     if (initialUrl == null) return
+
+    // Blank-shell guard: onReceivedError does not always fire for a main frame
+    // that never renders (dropped connection mid-redirect, blocked subresources),
+    // and the user would sit on the WebView's blank canvas forever. Surface the
+    // retry overlay when a load never settles.
+    androidx.compose.runtime.LaunchedEffect(initialUrl, loadAttempt) {
+        loadTimedOut = false
+        kotlinx.coroutines.delay(LoadWatchdogMillis)
+        if (loading && !loadFailed && !unpaired) loadTimedOut = true
+    }
+    androidx.compose.runtime.LaunchedEffect(loading) {
+        if (!loading) loadTimedOut = false
+    }
 
     val webView = remember { mutableStateOf<WebView?>(null) }
 
@@ -174,13 +191,18 @@ fun DshWebScreen(
                             val path = Uri.parse(url).path.orEmpty()
                             val settledInApp = path == "/" || path.startsWith("/pair-app")
                             if (!unpaired && settledInApp) {
-                                if (resumeHostId != null) {
+                                val hostId = if (resumeHostId != null) {
                                     hostStore.touch(resumeHostId)
+                                    resumeHostId
                                 } else {
                                     val uri = Uri.parse(url)
                                     val name = uri.host.orEmpty() + (uri.port.takeIf { it > 0 }?.let { ":$it" } ?: "")
-                                    hostStore.upsert(baseUrl = origin, name = name)
+                                    hostStore.upsert(baseUrl = origin, name = name).id
                                 }
+                                // Remember the paired host so a recreation resumes
+                                // through the cookie path instead of replaying the
+                                // one-time pairing link.
+                                onHostPaired(hostId)
                             }
                         }
 
@@ -267,6 +289,21 @@ fun DshWebScreen(
                 onAction = {
                     loadFailed = false
                     loading = true
+                    loadAttempt += 1
+                    webView.value?.reload()
+                },
+                secondaryLabel = stringResource(R.string.dsh_web_close),
+                onSecondary = onExit,
+            )
+        }
+
+        if (loadTimedOut && !loadFailed && !unpaired) {
+            DshWebOverlay(
+                title = stringResource(R.string.dsh_web_load_timeout),
+                actionLabel = stringResource(R.string.dsh_web_retry),
+                onAction = {
+                    loading = true
+                    loadAttempt += 1
                     webView.value?.reload()
                 },
                 secondaryLabel = stringResource(R.string.dsh_web_close),
@@ -289,6 +326,12 @@ fun DshWebScreen(
         }
     }
 }
+
+/**
+ * How long a load may stay unsettled before the retry overlay replaces the
+ * blank canvas. Generous enough for a cold SPA boot over a slow LAN.
+ */
+private const val LoadWatchdogMillis = 20_000L
 
 @Composable
 private fun DshWebOverlay(

@@ -93,9 +93,12 @@ fun DshAgentsApp(
     val context = LocalContext.current
     val sessionStore = remember(context) { AuthSessionStore(context) }
     val dshHostStore = remember(context) { DshHostStore(context) }
-    var dshLaunchRequest by rememberSaveable(stateSaver = DshLaunchRequestSaver) {
-        mutableStateOf<DshLaunchRequest?>(null)
-    }
+    var dshLaunchRequest by remember { mutableStateOf<DshLaunchRequest?>(null) }
+    // Survives recreation so the DSH Web session can resume, but only through
+    // the already-paired host (cookie path): the one-time pairing link itself
+    // is never persisted, because replaying it would redeem the token again
+    // and mint another device session on the host.
+    var dshPairedHostId by rememberSaveable { mutableStateOf<String?>(null) }
     var destinationName by rememberSaveable {
         mutableStateOf(AppDestination.ModePicker.name)
     }
@@ -479,6 +482,14 @@ fun DshAgentsApp(
         onOAuthCallbackConsumed()
     }
 
+    // Resuming after a recreation must never re-redeem the pairing link: with
+    // no live request, the previously paired host is re-opened through its
+    // cookie-backed /pair-app landing instead.
+    val effectiveDshLaunchRequest = dshLaunchRequest
+        ?: dshPairedHostId
+            ?.takeIf { destinationName == AppDestination.DshWeb.name }
+            ?.let(DshLaunchRequest::ResumeHost)
+
     DshAgentsNavHost(
         currentDestination = currentDestination,
         sessionsState = sessionsState,
@@ -506,8 +517,9 @@ fun DshAgentsApp(
         pendingMobileLoginQr = pendingMobileLoginQr,
         webLoginViewModel = webLoginViewModel,
         dshHostStore = dshHostStore,
-        dshLaunchRequest = dshLaunchRequest,
+        dshLaunchRequest = effectiveDshLaunchRequest,
         onDshLaunchRequest = { dshLaunchRequest = it },
+        onDshHostPaired = { hostId -> dshPairedHostId = hostId },
         agentsAnywhereEntry = if (hasAuthSession) AppDestination.Sessions else AppDestination.LoginMethods,
         navigate = navigate,
         onRefreshSessions = {
@@ -876,23 +888,6 @@ private fun Context.hasUsableNetwork(): Boolean {
     val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
     return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
 }
-
-private val DshLaunchRequestSaver = listSaver<DshLaunchRequest?, Any>(
-    save = { request ->
-        when (request) {
-            is DshLaunchRequest.PairUrl -> listOf("pair", request.url)
-            is DshLaunchRequest.ResumeHost -> listOf("resume", request.hostId)
-            null -> emptyList()
-        }
-    },
-    restore = { values ->
-        when (values.getOrNull(0)) {
-            "pair" -> DshLaunchRequest.PairUrl(values[1] as String)
-            "resume" -> DshLaunchRequest.ResumeHost(values[1] as String)
-            else -> null
-        }
-    },
-)
 
 private val NewSessionDraftSaver = listSaver<NewSessionDraft?, Any>(
     save = { draft ->

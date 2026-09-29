@@ -3,7 +3,6 @@ package com.dshagents.app.ui.screens.dshremote
 import android.Manifest
 import android.content.pm.PackageManager
 import android.content.res.Configuration
-import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -89,11 +88,12 @@ import java.text.DateFormat
 import java.util.Date
 
 @Composable
-fun DshPairingScreen(
+internal fun DshPairingScreen(
     hostStore: DshHostStore,
     onPairLink: (String) -> Unit,
     onResumeHost: (String) -> Unit,
     onBack: () -> Unit,
+    qrGate: DshQrEmissionGate = remember { DshQrEmissionGate() },
 ) {
     val colors = LocalAAColors.current
     val context = LocalContext.current
@@ -163,6 +163,7 @@ fun DshPairingScreen(
                     hasCameraPermission = hasCameraPermission,
                     onQrValue = ::submitLink,
                     onCameraController = { torchController = it },
+                    emissionGate = qrGate,
                 )
                 if (hasCameraPermission) {
                     Box(
@@ -408,6 +409,7 @@ private fun DshScannerFrame(
     hasCameraPermission: Boolean,
     onQrValue: (String) -> Unit,
     onCameraController: (LifecycleCameraController) -> Unit,
+    emissionGate: DshQrEmissionGate,
 ) {
     val colors = LocalAAColors.current
     Box(
@@ -420,7 +422,11 @@ private fun DshScannerFrame(
         contentAlignment = Alignment.Center,
     ) {
         if (hasCameraPermission) {
-            DshCameraPreview(onQrValue = onQrValue, onCameraController = onCameraController)
+            DshCameraPreview(
+                onQrValue = onQrValue,
+                onCameraController = onCameraController,
+                emissionGate = emissionGate,
+            )
             DshScannerOverlay()
         } else {
             Text(
@@ -439,13 +445,13 @@ private fun DshScannerFrame(
 private fun DshCameraPreview(
     onQrValue: (String) -> Unit,
     onCameraController: (LifecycleCameraController) -> Unit,
+    emissionGate: DshQrEmissionGate,
 ) {
     if (LocalInspectionMode.current) return
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnQrValue by rememberUpdatedState(onQrValue)
-    val emissionGate = remember { DshQrEmissionGate() }
     val scanner = remember {
         val options = BarcodeScannerOptions.Builder()
             .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
@@ -482,7 +488,7 @@ private fun DshCameraPreview(
                         ?.getValue(scanner)
                         ?.firstOrNull()
                         ?.rawValue
-                    if (!qrValue.isNullOrBlank() && emissionGate.shouldEmit(qrValue, SystemClock.elapsedRealtime())) {
+                    if (!qrValue.isNullOrBlank() && emissionGate.shouldEmit(qrValue)) {
                         currentOnQrValue(qrValue)
                     }
                 },
@@ -531,26 +537,23 @@ private fun DshScannerOverlay() {
 }
 
 /**
- * Throttles QR submissions from the analyzer stream. Detection flickers (a
- * dropped frame between two hits of the same code) must not re-fire the
- * pairing navigation, so the retry delay is keyed on the last EMITTED value
- * and survives visibility gaps; a genuinely different code fires immediately.
+ * One QR link drives exactly one pairing navigation. The gate is hoisted
+ * above the pairing screen so it survives leaving and re-entering it: a
+ * phone still held at the same code must NOT re-open the link when the user
+ * navigates back, because every open redeems the pairing token again and
+ * mints another device session on the host (one scan showing up as several
+ * pairings). Detection flicker is harmless for the same reason. A
+ * genuinely different code fires immediately; retrying the current link is
+ * done from the WebView's own retry overlay, which reloads the same page
+ * without going through this gate.
  */
-private class DshQrEmissionGate {
-    private var lastEmittedQrValue: String? = null
-    private var lastEmissionAtMillis: Long = 0
+internal class DshQrEmissionGate {
+    private var handledQrValue: String? = null
 
-    fun shouldEmit(qrValue: String, nowMillis: Long): Boolean {
-        if (qrValue == lastEmittedQrValue && nowMillis - lastEmissionAtMillis < SameQrRetryDelayMillis) {
-            return false
-        }
-        lastEmittedQrValue = qrValue
-        lastEmissionAtMillis = nowMillis
+    fun shouldEmit(qrValue: String): Boolean {
+        if (qrValue == handledQrValue) return false
+        handledQrValue = qrValue
         return true
-    }
-
-    companion object {
-        private const val SameQrRetryDelayMillis = 1_200L
     }
 }
 
